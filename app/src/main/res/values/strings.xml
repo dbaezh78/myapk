@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Apagar Pantalla WP56</string>
+    <string name="accessibility_service_label">Apagar Pantalla WP56 (Doble Toque)</string>
+    <string name="accessibility_service_description">Permite apagar y bloquear la pantalla del Oukitel WP56 al hacer doble toque en la barra de estado superior desde cualquier pantalla.</string>
+</resources>
