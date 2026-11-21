@@ -8,6 +8,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -40,6 +41,10 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
   private var lastOutsideTapTime: Long = 0L
   private var lastScrollEventTime: Long = 0L
 
+  // Home screen (Escritorio) detection
+  private val homeLauncherPackages = mutableSetOf<String>()
+  private var isOnHomeScreen: Boolean = false
+
   // Screen-On (wake via double-tap knock detection while screen is off)
   private var powerManager: PowerManager? = null
   private var sensorManager: SensorManager? = null
@@ -62,10 +67,12 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
       when (intent?.action) {
         Intent.ACTION_SCREEN_OFF -> {
           isScreenInteractive = false
+          lastOutsideTapTime = 0L
           updateScreenOffWakeMonitor()
         }
         Intent.ACTION_SCREEN_ON -> {
           isScreenInteractive = true
+          lastOutsideTapTime = 0L
           stopScreenOffWakeMonitor()
         }
       }
@@ -83,6 +90,8 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
     proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
     isScreenInteractive = powerManager?.isInteractive ?: true
 
+    refreshHomeLauncherPackages()
+
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_OFF)
       addAction(Intent.ACTION_SCREEN_ON)
@@ -98,9 +107,35 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
   }
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-    if (event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
-      lastScrollEventTime = SystemClock.uptimeMillis()
-      lastOutsideTapTime = 0L
+    val ev = event ?: return
+    when (ev.eventType) {
+      AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+        lastScrollEventTime = SystemClock.uptimeMillis()
+        lastOutsideTapTime = 0L
+      }
+      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+      AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+      -> {
+        val pkg = ev.packageName?.toString() ?: return
+        // Ignore background status bar clock/battery updates from systemui on CONTENT_CHANGED
+        if (pkg == "com.android.systemui") {
+          if (ev.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Notification shade or volume/system dialog opened
+            lastOutsideTapTime = 0L
+          }
+          return
+        }
+        if (pkg == "android" || pkg == "com.android.permissioncontroller") {
+          return
+        }
+
+        val nowOnHome = isLauncherPackage(pkg)
+        if (isOnHomeScreen != nowOnHome) {
+          isOnHomeScreen = nowOnHome
+          lastOutsideTapTime = 0L
+          updateDesktopTouchOverlayState()
+        }
+      }
     }
   }
 
@@ -130,15 +165,67 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
     super.onDestroy()
   }
 
+  private fun refreshHomeLauncherPackages() {
+    homeLauncherPackages.clear()
+    try {
+      val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+      val defaultHome =
+        packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+      defaultHome?.activityInfo?.packageName?.let { pkg ->
+        if (pkg != "android" && pkg != "com.android.settings") {
+          homeLauncherPackages.add(pkg)
+        }
+      }
+
+      val allHomes = packageManager.queryIntentActivities(homeIntent, 0)
+      for (info in allHomes) {
+        val pkg = info.activityInfo?.packageName ?: continue
+        if (pkg != "android" && pkg != "com.android.settings") {
+          homeLauncherPackages.add(pkg)
+        }
+      }
+    } catch (_: Exception) {
+      // Ignored
+    }
+
+    // Known launcher packages for Oukitel / MediaTek / AOSP / Google Android 14/15
+    homeLauncherPackages.addAll(
+      listOf(
+        "com.android.launcher3",
+        "com.android.launcher",
+        "com.google.android.apps.nexuslauncher",
+        "com.mediatek.launcher3",
+        "com.doke.launcher",
+        "com.oukitel.launcher",
+        "com.search.launcher",
+        "com.Quickstep.launcher",
+      ),
+    )
+  }
+
+  private fun isLauncherPackage(pkg: String): Boolean {
+    if (pkg == packageName) return false
+    if (pkg in homeLauncherPackages) return true
+    if (pkg.contains("launcher", ignoreCase = true) && !pkg.contains("settings", ignoreCase = true)) {
+      return true
+    }
+    return false
+  }
+
   private fun applyConfiguration() {
+    refreshHomeLauncherPackages()
     setupStatusBarOverlay()
+    updateDesktopTouchOverlayState()
+    updateScreenOffWakeMonitor()
+  }
+
+  private fun updateDesktopTouchOverlayState() {
     val zone = AppPreferences.getTouchZone(this)
-    if (zone == AppPreferences.ZONE_ANYWHERE) {
+    if (zone == AppPreferences.ZONE_ANYWHERE && isOnHomeScreen) {
       setupOutsideTouchOverlay()
     } else {
       removeOutsideTouchOverlay()
     }
-    updateScreenOffWakeMonitor()
   }
 
   private fun lockScreenIfEnabled() {
@@ -261,7 +348,7 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
         if (event.actionMasked == MotionEvent.ACTION_OUTSIDE ||
           event.actionMasked == MotionEvent.ACTION_DOWN
         ) {
-          handleScreenWideTouch()
+          handleDesktopTouch()
         }
         false
       }
@@ -291,7 +378,11 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
     }
   }
 
-  private fun handleScreenWideTouch() {
+  private fun handleDesktopTouch() {
+    if (!isOnHomeScreen) {
+      lastOutsideTapTime = 0L
+      return
+    }
     if (!AppPreferences.isTurnOffEnabled(this)) return
     if (AppPreferences.getTouchZone(this) != AppPreferences.ZONE_ANYWHERE) return
     if (isKeyboardVisible()) {
@@ -437,7 +528,6 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
           gravityInitialized = true
           return
         }
-        // High-pass filter on Z axis to isolate sharp tap/knock impulses on the screen
         gravityZ = 0.8f * gravityZ + 0.2f * z
         val linearZ = abs(z - gravityZ)
         val now = SystemClock.uptimeMillis()

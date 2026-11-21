@@ -35,7 +35,7 @@ class MainActivity : Activity() {
   private lateinit var testDoubleTapBox: LinearLayout
 
   private val zoneOptions = arrayOf(
-    "En cualquier parte de la pantalla",
+    "En el escritorio y barra superior",
     "Solo en la barra superior",
   )
 
@@ -249,7 +249,7 @@ class MainActivity : Activity() {
         gravity = Gravity.CENTER
       }
       val subtitle = TextView(this@MainActivity).apply {
-        text = "También funciona según la zona y acción seleccionadas arriba"
+        text = "Funciona en el escritorio o en la barra superior (no dentro de juegos ni otras apps)"
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         setTextColor(Color.parseColor("#1A73E8"))
         gravity = Gravity.CENTER
@@ -298,13 +298,13 @@ class MainActivity : Activity() {
         setPadding(0, 0, 0, dp(8))
       }
       val step1 = TextView(this@MainActivity).apply {
-        text = "• En cualquier parte de la pantalla: Detecta doble toque rápido en toda la pantalla (se pausa automáticamente si el teclado está abierto para que escribas sin problema)."
+        text = "• En el escritorio y barra superior: Detecta el doble toque en cualquier parte cuando estás en el escritorio (pantalla de inicio). Si abres una app (calculadora, juegos, WhatsApp, etc.), solo se apaga si haces doble toque en la barra superior."
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         setTextColor(Color.parseColor("#3C4043"))
         setPadding(0, 0, 0, dp(6))
       }
       val step2 = TextView(this@MainActivity).apply {
-        text = "• Solo en la barra superior: Detecta el doble toque únicamente en la barra de estado superior."
+        text = "• Solo en la barra superior: Detecta el doble toque únicamente en la barra de estado de arriba."
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
         setTextColor(Color.parseColor("#3C4043"))
         setPadding(0, 0, 0, dp(6))
