@@ -80,7 +80,9 @@ class StatusBarScreenOffService : AccessibilityService() {
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
-          performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+          }
           return true
         }
 
@@ -138,10 +140,11 @@ class StatusBarScreenOffService : AccessibilityService() {
       gravity = Gravity.TOP or Gravity.START
       x = 0
       y = 0
-      layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-      } else {
-        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+      } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        layoutInDisplayCutoutMode =
+          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
       }
     }
 
@@ -211,7 +214,11 @@ class StatusBarScreenOffService : AccessibilityService() {
 
     fun lockScreenNow(): Boolean {
       val service = instance ?: return false
-      return service.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+      return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        service.performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+      } else {
+        false
+      }
     }
 
     fun isServiceEnabled(context: Context): Boolean {
