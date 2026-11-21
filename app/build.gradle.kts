@@ -10,8 +10,8 @@ android {
     applicationId = "com.oukitel.wp56.screenoff"
     minSdk = 26
     targetSdk = 34
-    versionCode = 4
-    versionName = "1.2"
+    versionCode = 6
+    versionName = "1.4"
   }
 
   signingConfigs {

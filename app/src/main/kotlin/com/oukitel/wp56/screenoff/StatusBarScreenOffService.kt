@@ -29,6 +29,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.InputMethodManager
 import kotlin.math.abs
 
 class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
@@ -43,7 +44,8 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
 
   // Home screen (Escritorio) detection
   private val homeLauncherPackages = mutableSetOf<String>()
-  private var isOnHomeScreen: Boolean = false
+  private val inputMethodPackages = mutableSetOf<String>()
+  private var isOnHomeScreen: Boolean = true
 
   // Screen-On (wake via double-tap knock detection while screen is off)
   private var powerManager: PowerManager? = null
@@ -90,7 +92,7 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
     proximitySensor = sensorManager?.getDefaultSensor(Sensor.TYPE_PROXIMITY)
     isScreenInteractive = powerManager?.isInteractive ?: true
 
-    refreshHomeLauncherPackages()
+    refreshHomeLauncherPackages(this)
 
     val filter = IntentFilter().apply {
       addAction(Intent.ACTION_SCREEN_OFF)
@@ -113,19 +115,33 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
         lastScrollEventTime = SystemClock.uptimeMillis()
         lastOutsideTapTime = 0L
       }
-      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-      AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-      -> {
+      AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
         val pkg = ev.packageName?.toString() ?: return
-        // Ignore background status bar clock/battery updates from systemui on CONTENT_CHANGED
-        if (pkg == "com.android.systemui") {
-          if (ev.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            // Notification shade or volume/system dialog opened
+        if (isLauncherPackage(pkg)) {
+          isOnHomeScreen = true
+        }
+      }
+      AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+        val pkg = ev.packageName?.toString() ?: return
+        val cls = ev.className?.toString().orEmpty()
+
+        // Ignore our own overlay View windows; only count our package if MainActivity itself opened
+        if (pkg == packageName) {
+          if (cls.contains("MainActivity")) {
+            isOnHomeScreen = false
             lastOutsideTapTime = 0L
           }
           return
         }
-        if (pkg == "android" || pkg == "com.android.permissioncontroller") {
+
+        // Ignore system UI overlays, volume bars, toasts, permission dialogs, and keyboards
+        if (pkg == "com.android.systemui" ||
+          pkg == "android" ||
+          pkg == "com.android.permissioncontroller" ||
+          pkg == "com.google.android.permissioncontroller" ||
+          pkg in inputMethodPackages ||
+          cls.startsWith("android.widget.Toast")
+        ) {
           return
         }
 
@@ -133,7 +149,6 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
         if (isOnHomeScreen != nowOnHome) {
           isOnHomeScreen = nowOnHome
           lastOutsideTapTime = 0L
-          updateDesktopTouchOverlayState()
         }
       }
     }
@@ -165,67 +180,97 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
     super.onDestroy()
   }
 
-  private fun refreshHomeLauncherPackages() {
+  private fun refreshHomeLauncherPackages(context: Context) {
     homeLauncherPackages.clear()
-    try {
-      val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-      val defaultHome =
-        packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
-      defaultHome?.activityInfo?.packageName?.let { pkg ->
-        if (pkg != "android" && pkg != "com.android.settings") {
-          homeLauncherPackages.add(pkg)
-        }
-      }
+    homeLauncherPackages.addAll(detectLauncherPackages(context))
 
-      val allHomes = packageManager.queryIntentActivities(homeIntent, 0)
-      for (info in allHomes) {
-        val pkg = info.activityInfo?.packageName ?: continue
-        if (pkg != "android" && pkg != "com.android.settings") {
-          homeLauncherPackages.add(pkg)
+    inputMethodPackages.clear()
+    try {
+      val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+      imm?.inputMethodList?.forEach { imi ->
+        inputMethodPackages.add(imi.packageName)
+      }
+    } catch (_: Exception) {
+      // Ignored
+    }
+  }
+
+  private fun isLauncherPackage(pkg: String): Boolean {
+    if (pkg == packageName) return false
+    if (pkg in homeLauncherPackages) return true
+    val lower = pkg.lowercase()
+    if ((lower.contains("launcher") ||
+        lower.contains("trebuchet") ||
+        lower.contains("quickstep") ||
+        lower.contains("desktop") ||
+        lower.endsWith(".home")) &&
+      !lower.contains("settings")
+    ) {
+      return true
+    }
+    return false
+  }
+
+  private fun checkIsOnHomeScreenNow(): Boolean {
+    val livePkg = getLiveActivePackageName()
+    if (!livePkg.isNullOrEmpty()) {
+      val onHome = isLauncherPackage(livePkg)
+      isOnHomeScreen = onHome
+      return onHome
+    }
+    return isOnHomeScreen
+  }
+
+  private fun getLiveActivePackageName(): String? {
+    try {
+      val winList = windows
+      if (!winList.isNullOrEmpty()) {
+        val activeAppWin = winList.firstOrNull {
+          it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive
+        } ?: winList.firstOrNull {
+          it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused
+        } ?: winList.firstOrNull {
+          it.type == AccessibilityWindowInfo.TYPE_APPLICATION
+        }
+        val pkg = activeAppWin?.root?.packageName?.toString()
+        if (!pkg.isNullOrEmpty() &&
+          pkg != packageName &&
+          pkg != "com.android.systemui" &&
+          pkg != "android"
+        ) {
+          return pkg
         }
       }
     } catch (_: Exception) {
       // Ignored
     }
 
-    // Known launcher packages for Oukitel / MediaTek / AOSP / Google Android 14/15
-    homeLauncherPackages.addAll(
-      listOf(
-        "com.android.launcher3",
-        "com.android.launcher",
-        "com.google.android.apps.nexuslauncher",
-        "com.mediatek.launcher3",
-        "com.doke.launcher",
-        "com.oukitel.launcher",
-        "com.search.launcher",
-        "com.Quickstep.launcher",
-      ),
-    )
-  }
-
-  private fun isLauncherPackage(pkg: String): Boolean {
-    if (pkg == packageName) return false
-    if (pkg in homeLauncherPackages) return true
-    if (pkg.contains("launcher", ignoreCase = true) && !pkg.contains("settings", ignoreCase = true)) {
-      return true
+    try {
+      val pkg = rootInActiveWindow?.packageName?.toString()
+      if (!pkg.isNullOrEmpty() &&
+        pkg != packageName &&
+        pkg != "com.android.systemui" &&
+        pkg != "android"
+      ) {
+        return pkg
+      }
+    } catch (_: Exception) {
+      // Ignored
     }
-    return false
+
+    return null
   }
 
   private fun applyConfiguration() {
-    refreshHomeLauncherPackages()
+    refreshHomeLauncherPackages(this)
     setupStatusBarOverlay()
-    updateDesktopTouchOverlayState()
-    updateScreenOffWakeMonitor()
-  }
-
-  private fun updateDesktopTouchOverlayState() {
     val zone = AppPreferences.getTouchZone(this)
-    if (zone == AppPreferences.ZONE_ANYWHERE && isOnHomeScreen) {
+    if (zone == AppPreferences.ZONE_ANYWHERE) {
       setupOutsideTouchOverlay()
     } else {
       removeOutsideTouchOverlay()
     }
+    updateScreenOffWakeMonitor()
   }
 
   private fun lockScreenIfEnabled() {
@@ -379,10 +424,6 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
   }
 
   private fun handleDesktopTouch() {
-    if (!isOnHomeScreen) {
-      lastOutsideTapTime = 0L
-      return
-    }
     if (!AppPreferences.isTurnOffEnabled(this)) return
     if (AppPreferences.getTouchZone(this) != AppPreferences.ZONE_ANYWHERE) return
     if (isKeyboardVisible()) {
@@ -396,8 +437,13 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
       return
     }
 
+    if (!checkIsOnHomeScreenNow()) {
+      lastOutsideTapTime = 0L
+      return
+    }
+
     val delta = now - lastOutsideTapTime
-    if (delta in 65L..320L) {
+    if (delta in 65L..350L) {
       lastOutsideTapTime = 0L
       lockScreenIfEnabled()
     } else {
@@ -622,6 +668,50 @@ class StatusBarScreenOffService : AccessibilityService(), SensorEventListener {
       } else {
         false
       }
+    }
+
+    fun detectLauncherPackages(context: Context): Set<String> {
+      val result = mutableSetOf<String>()
+      try {
+        val pm = context.packageManager
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+
+        pm.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+          ?.activityInfo?.packageName?.let { pkg ->
+            if (pkg != "android" && pkg != "com.android.settings") result.add(pkg)
+          }
+
+        pm.resolveActivity(homeIntent, 0)
+          ?.activityInfo?.packageName?.let { pkg ->
+            if (pkg != "android" && pkg != "com.android.settings") result.add(pkg)
+          }
+
+        for (flags in intArrayOf(0, PackageManager.MATCH_DEFAULT_ONLY, PackageManager.MATCH_ALL)) {
+          val list = pm.queryIntentActivities(homeIntent, flags)
+          for (info in list) {
+            val pkg = info.activityInfo?.packageName ?: continue
+            if (pkg != "android" && pkg != "com.android.settings") {
+              result.add(pkg)
+            }
+          }
+        }
+      } catch (_: Exception) {
+        // Ignored
+      }
+
+      result.addAll(
+        listOf(
+          "com.android.launcher3",
+          "com.android.launcher",
+          "com.google.android.apps.nexuslauncher",
+          "com.mediatek.launcher3",
+          "com.doke.launcher",
+          "com.oukitel.launcher",
+          "com.prize.launcher",
+          "com.freeme.launcher",
+        ),
+      )
+      return result
     }
 
     fun isServiceEnabled(context: Context): Boolean {
